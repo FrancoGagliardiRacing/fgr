@@ -1626,8 +1626,167 @@
     .hero-title { font-size: 60px; }
   }
 </style>
+
+<style>
+  /* ══════════════════════════════════════════════════════
+     PRELOADER — Pantalla de carga inicial
+     Requisitos:
+       - Fondo beige #f5f5dc, pantalla completa
+       - Logo centrado, filtrado a naranja #E8510A
+       - Mínimo 1s visible
+       - Zoom + fade out al terminar la carga
+       - Sin dependencias externas
+       - Accesible (aria-hidden, prefers-reduced-motion)
+  ══════════════════════════════════════════════════════ */
+
+  /* 1. Bloquear scroll del body mientras carga */
+  body.is-loading {
+    overflow: hidden;
+  }
+
+  /* 2. Contenedor del preloader */
+  #preloader {
+    position: fixed;
+    inset: 0;
+    z-index: 99999;
+    background-color: #f5f5dc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* Arranca visible y opaco */
+    opacity: 1;
+    visibility: visible;
+    /* La transición de salida se aplica via JS al añadir .preloader--exit */
+    transition: opacity 0.55s cubic-bezier(0.4, 0, 0.2, 1),
+                visibility 0s linear 0.55s;
+  }
+
+  /* 3. Estado de salida */
+  #preloader.preloader--exit {
+    opacity: 0;
+    visibility: hidden;
+  }
+
+  /* 4. Wrapper del logo — controla el zoom */
+  #preloader-logo-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* Animación de entrada: pequeño fade-in + rise desde abajo */
+    animation: preloaderEnter 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  }
+
+  /* 5. Al salir: zoom rápido hacia el usuario */
+  #preloader.preloader--exit #preloader-logo-wrap {
+    animation: preloaderZoomOut 0.5s cubic-bezier(0.55, 0, 1, 0.45) forwards;
+  }
+
+  /* 6. El logo en sí */
+  #preloader-logo {
+    width: clamp(160px, 30vw, 280px);
+    height: auto;
+    display: block;
+    /* Filtro CSS para convertir el PNG a naranja #E8510A
+       Técnica: brightness(0) convierte a negro,
+       luego sepia+saturate+hue-rotate calibran el naranja exacto */
+    filter:
+      brightness(0)
+      saturate(100%)
+      invert(35%)
+      sepia(90%)
+      saturate(600%)
+      hue-rotate(5deg)
+      brightness(1.0);
+    /* Fallback: si el logo ya es naranja, quitar el filtro */
+  }
+
+  /* 7. Barra de progreso sutil en el borde inferior */
+  #preloader-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    height: 2px;
+    width: 0%;
+    background: #E8510A;
+    transition: width 0.9s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* 8. Pulse suave en el logo mientras espera */
+  #preloader-logo {
+    animation: logoPulse 1.8s ease-in-out infinite;
+  }
+  #preloader.preloader--exit #preloader-logo {
+    animation: none;
+  }
+
+  /* ─── KEYFRAMES ─── */
+  @keyframes preloaderEnter {
+    from {
+      opacity: 0;
+      transform: translateY(16px) scale(0.92);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes preloaderZoomOut {
+    from {
+      transform: scale(1);
+      opacity: 1;
+    }
+    to {
+      transform: scale(2.8);
+      opacity: 0;
+    }
+  }
+
+  @keyframes logoPulse {
+    0%, 100% { opacity: 1;    transform: scale(1); }
+    50%       { opacity: 0.75; transform: scale(0.97); }
+  }
+
+  /* 9. Accesibilidad: respetar preferencia de movimiento reducido */
+  @media (prefers-reduced-motion: reduce) {
+    #preloader-logo-wrap,
+    #preloader-logo {
+      animation: none !important;
+    }
+    #preloader,
+    #preloader.preloader--exit {
+      transition: opacity 0.2s linear, visibility 0s linear 0.2s;
+    }
+    #preloader.preloader--exit #preloader-logo-wrap {
+      animation: none !important;
+    }
+  }
+</style>
 </head>
 <body>
+
+<!-- ══════════════════════════════════════════════════════
+     PRELOADER — Pantalla de carga inicial
+     Para ocultar manualmente durante desarrollo:
+     añadí ?nopreloader a la URL
+══════════════════════════════════════════════════════ -->
+<div
+  id="preloader"
+  role="status"
+  aria-live="polite"
+  aria-label="Cargando Sponsor Day..."
+>
+  <div id="preloader-logo-wrap">
+    <img
+      id="preloader-logo"
+      src="assets/logos/logo-franco-gagliardi.png"
+      alt="Franco Gagliardi Racing — cargando"
+      draggable="false"
+    >
+  </div>
+  <div id="preloader-bar" aria-hidden="true"></div>
+</div>
+
 
 <!-- NAV -->
 <nav id="navbar">
@@ -2394,6 +2553,81 @@
       hero.style.transform = `scale(1.05) translateY(${scrollY * 0.2}px)`;
     }
   });
+
+  // ══════════════════════════════════════════════════════
+  // PRELOADER — Lógica de control
+  //
+  // Estrategia de timing:
+  //   - Tiempo mínimo visible: 1200ms (garantiza que el logo se vea)
+  //   - Tiempo máximo: espera al evento window.load
+  //   - Se ejecuta el que llegue ÚLTIMO (Math.max implícito via Promise.all)
+  //   - Escape hatch: ?nopreloader en URL para desarrollo
+  // ══════════════════════════════════════════════════════
+  (function() {
+    'use strict';
+
+    const preloader = document.getElementById('preloader');
+    const bar       = document.getElementById('preloader-bar');
+    if (!preloader) return;
+
+    // Escape para desarrollo: añadí ?nopreloader a la URL
+    if (window.location.search.includes('nopreloader')) {
+      preloader.style.display = 'none';
+      document.body.classList.remove('is-loading');
+      return;
+    }
+
+    const MIN_DURATION = 1200; // ms mínimos de visibilidad
+    const startTime    = Date.now();
+
+    // Bloquear scroll mientras carga
+    document.body.classList.add('is-loading');
+
+    // Animar la barra de progreso
+    // Arranca a 0 → llega a 85% rápido → espera → 100% al cerrar
+    requestAnimationFrame(() => {
+      bar.style.width = '70%';
+      setTimeout(() => { bar.style.width = '88%'; }, 600);
+    });
+
+    function dismiss() {
+      // Completar la barra
+      bar.style.transition = 'width 0.25s ease';
+      bar.style.width = '100%';
+
+      setTimeout(() => {
+        // Disparar animación de salida
+        preloader.classList.add('preloader--exit');
+
+        // Restaurar scroll inmediatamente (UX: el usuario puede empezar a scrollear)
+        document.body.classList.remove('is-loading');
+
+        // Eliminar el nodo del DOM después de que termine la transición
+        // (0.55s de opacity + pequeño margen)
+        setTimeout(() => {
+          preloader.remove();
+        }, 650);
+      }, 260); // pequeña pausa post-barra para que se vea al 100%
+    }
+
+    // Promise 1: tiempo mínimo garantizado
+    const minTimer = new Promise(resolve => {
+      setTimeout(resolve, MIN_DURATION);
+    });
+
+    // Promise 2: página completamente cargada (imágenes, fuentes, etc.)
+    const pageLoad = new Promise(resolve => {
+      if (document.readyState === 'complete') {
+        resolve();
+      } else {
+        window.addEventListener('load', resolve, { once: true });
+      }
+    });
+
+    // Ejecutar cuando AMBAS condiciones se cumplan
+    Promise.all([minTimer, pageLoad]).then(dismiss);
+
+  })();
+
 </script>
 </body>
-</html>
